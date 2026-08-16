@@ -1,0 +1,1626 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Run Flyover</title>
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Flyover">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Upload screen only; the map UI stays on system-ui. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-1: #14140f;
+    --surface-2: #1a1a19;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --series-ele: #3987e5;
+    --series-pace: #d95926;
+    --series-hr: #199e70;
+    --border: rgba(255,255,255,0.10);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--surface-1); color: var(--text-primary); }
+  #map { position: absolute; inset: 0; }
+
+  .btn {
+    background: var(--series-ele); color: #fff; border: 0; border-radius: 8px;
+    min-height: 44px; padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ==================================================================
+     UPLOAD SCREEN — scoped to #drop, portrait-first.
+     Tokens are declared on #drop, not :root, so nothing here can reach
+     the map UI. Only the upload screen uses Barlow.
+     ================================================================== */
+  #drop {
+    --u-bg: #0f1115;                 /* not pure black: OLED smear + halation */
+    --u-ink: #ffffff;                /* 18.9:1 on --u-bg */
+    --u-ink-2: #c3c2b7;              /* 10.6:1 */
+    --u-ink-3: #8b8a83;              /* 5.3:1  — still AA for body */
+    --u-cta: #c2410c;                /* 5.18:1 with white; #EA580C was 3.56:1 and fails AA */
+    --u-cta-hi: #e2580f;
+    --u-accent: #fb923c;             /* 8.35:1 — accent text, never on white */
+    --u-line: rgba(255,255,255,0.10);
+
+    position: absolute; inset: 0; z-index: 20;
+    display: flex;                   /* auto margins on .u-wrap centre it without
+                                        clipping the top when content overflows */
+    overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
+    background: var(--u-bg);
+    color: var(--u-ink);
+    font-family: 'Barlow', system-ui, -apple-system, sans-serif;
+    text-align: center;
+    /* Respect the notch and the home indicator. */
+    padding:
+      calc(28px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+      calc(28px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
+  }
+  #drop.hide { display: none; }
+  /* An explicit `display` beats the UA rule behind the hidden attribute, so
+     #idle/#busy need this or the spinner sits on screen at rest. */
+  #drop [hidden] { display: none !important; }
+
+  .u-wrap { margin: auto; width: 100%; max-width: 400px; position: relative; z-index: 1; }
+
+  /* Ambient light, the one decorative element. Fixed-size blobs, no layout cost. */
+  /* The drift animation scales past the edges, and a transform on this box
+     would make #drop horizontally scrollable. Animating an inner layer keeps
+     the overflow inside a clipping box of its own. */
+  .u-aurora { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .u-aurora::before {
+    content: ''; position: absolute; inset: 0;
+    background:
+      radial-gradient(38vmax 38vmax at 78% 8%,  rgba(194,65,12,0.20), transparent 62%),
+      radial-gradient(42vmax 42vmax at 12% 92%, rgba(57,135,229,0.16), transparent 66%);
+    animation: drift 26s ease-in-out infinite alternate;
+  }
+  @keyframes drift { to { transform: translate3d(0, -3%, 0) scale(1.08); } }
+
+  .u-brand {
+    display: inline-flex; align-items: center; gap: 8px; margin: 0 0 26px;
+    font-size: 13px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--u-ink-2);
+  }
+  .u-brand svg { width: 20px; height: 20px; color: var(--u-accent); }
+
+  #drop h1 {
+    font-family: 'Barlow Condensed', 'Barlow', system-ui, sans-serif;
+    margin: 0 0 14px;
+    font-size: clamp(44px, 15vw, 68px);
+    font-weight: 700; line-height: 0.94; letter-spacing: 0.005em;
+    text-transform: uppercase;
+  }
+  #drop h1 em { font-style: normal; color: var(--u-accent); }
+
+  .u-sub {
+    margin: 0 auto 28px; max-width: 34ch;
+    font-size: 16px; line-height: 1.55; color: var(--u-ink-2);
+  }
+
+  #idle { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+
+  .btn.u-cta {
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+    width: 100%; min-height: 56px;          /* comfortably past the 44px floor */
+    padding: 16px 24px; border-radius: 14px;
+    background: var(--u-cta); color: #fff;
+    font-family: inherit; font-size: 17px; font-weight: 600; letter-spacing: 0.01em;
+    box-shadow: 0 10px 26px rgba(194,65,12,0.30);
+    transition: background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  }
+  .btn.u-cta svg { width: 21px; height: 21px; flex: none; }
+  .btn.u-cta:active { transform: scale(0.975); }
+  @media (hover: hover) {
+    .btn.u-cta:hover { background: var(--u-cta-hi); box-shadow: 0 12px 30px rgba(194,65,12,0.42); }
+  }
+  #drop :focus-visible { outline: 2px solid var(--u-accent); outline-offset: 3px; border-radius: 14px; }
+
+  /* Dragging is a pointer idea; on touch it is noise. */
+  #hint { display: none; font-size: 13px; color: var(--u-ink-3); }
+  @media (hover: hover) and (pointer: fine) { #hint { display: block; } }
+
+  #busy { display: flex; flex-direction: column; align-items: center; gap: 14px; min-height: 56px; justify-content: center; }
+  #busy-text { font-size: 15px; color: var(--u-ink-2); font-variant-numeric: tabular-nums; }
+  .spinner {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 2px solid var(--u-line); border-top-color: var(--u-accent);
+    animation: spin 0.8s linear infinite;
+  }
+
+  #err {
+    margin: 14px 0 0; min-height: 1.2em;
+    font-size: 14px; line-height: 1.45; color: #ff9d9d;
+  }
+  #err:not(:empty) {
+    padding: 10px 14px; border-radius: 10px;
+    background: rgba(220,38,38,0.12); border: 1px solid rgba(220,38,38,0.35);
+  }
+
+  /* Three benefits, left-aligned: centred text is harder to scan in a list. */
+  .u-points {
+    list-style: none; margin: 30px 0 0; padding: 22px 0 0;
+    border-top: 1px solid var(--u-line);
+    display: flex; flex-direction: column; gap: 16px; text-align: left;
+  }
+  .u-points li { display: flex; align-items: flex-start; gap: 13px; font-size: 14px; line-height: 1.45; color: var(--u-ink-3); }
+  .u-points svg { width: 22px; height: 22px; flex: none; margin-top: 1px; color: var(--u-accent); }
+  .u-points b { display: block; font-weight: 600; font-size: 15px; color: var(--u-ink); }
+
+  .u-help { margin: 22px 0 0; font-size: 13px; line-height: 1.5; color: var(--u-ink-3); }
+  .u-help b { color: var(--u-ink-2); font-weight: 600; }
+
+  /* Whole-window drop target, so the ring belongs on the window. */
+  #drop.over::after {
+    content: ''; position: fixed; inset: 10px; z-index: 2; pointer-events: none;
+    border: 2px dashed var(--u-accent); border-radius: 18px;
+    background: rgba(251,146,60,0.06);
+  }
+
+  /* Landscape phones are short: tighten before anything is forced to scroll. */
+  @media (max-height: 560px) and (orientation: landscape) {
+    #drop h1 { font-size: clamp(30px, 7vw, 40px); }
+    .u-brand { margin-bottom: 14px; }
+    .u-sub { margin-bottom: 18px; }
+    .u-points { margin-top: 20px; padding-top: 16px; gap: 12px; }
+  }
+  @media (min-width: 700px) {
+    .u-wrap { max-width: 460px; }
+    .btn.u-cta { width: auto; min-width: 300px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .u-aurora::before { animation: none; }
+    .spinner { animation-duration: 3s; }
+    .btn.u-cta { transition: none; }
+    .u-wrap > * { animation: none !important; }
+  }
+
+  /* Subtle entrance: 340ms, power1.out-equivalent, staggered down the page. */
+  .u-wrap > * { animation: rise 340ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+  .u-wrap > :nth-child(2) { animation-delay: 50ms; }
+  .u-wrap > :nth-child(3) { animation-delay: 100ms; }
+  .u-wrap > :nth-child(4) { animation-delay: 150ms; }
+  .u-wrap > :nth-child(n+5) { animation-delay: 200ms; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+
+
+  /* ---- stats ---- */
+  #stats {
+    position: absolute; top: 16px; left: 16px; z-index: 10;
+    background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px;
+    /* The hero number is two lines tall and leaves its whole right side empty,
+       so the remaining tiles sit beside it rather than under it. */
+    display: flex; align-items: center; gap: 18px;
+    width: max-content; max-width: calc(100vw - 32px);
+    padding-right: 44px;   /* room for the options button */
+  }
+  #stats .tiles { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 18px; }
+  #stats [data-field][hidden] { display: none; }
+
+  /* ---- which stats to show ---- */
+  #card-opts {
+    position: absolute; top: 0; right: 0;
+    width: 44px; height: 44px; padding: 0; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: 0; border-radius: 9px;
+    color: var(--text-muted); cursor: pointer;
+    transition: color 150ms ease, background 150ms ease;
+  }
+  #card-opts svg { width: 18px; height: 18px; }
+  @media (hover: hover) { #card-opts:hover { color: var(--text-primary); background: rgba(255,255,255,0.07); } }
+  #card-menu {
+    position: absolute; top: 42px; right: 6px; z-index: 2;
+    display: flex; flex-direction: column; gap: 2px;
+    min-width: 168px; max-width: calc(100vw - 40px);
+    padding: 8px; border-radius: 11px;
+    background: color-mix(in srgb, var(--surface-2) 97%, transparent);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border); box-shadow: 0 10px 34px rgba(0,0,0,0.6);
+    animation: rise-in 160ms ease-out;
+  }
+  #card-menu[hidden] { display: none; }
+  #card-menu label {
+    display: flex; align-items: center; gap: 9px;
+    min-height: 34px; padding: 0 8px; border-radius: 7px;
+    font-size: 13px; color: var(--text-secondary); cursor: pointer;
+    white-space: nowrap;
+  }
+  @media (hover: hover) { #card-menu label:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); } }
+  #card-menu input { accent-color: var(--series-ele); width: 16px; height: 16px; flex: none; cursor: pointer; }
+  #stats .hero { flex: none; }
+  /* A wrapped label doubles the row height and makes the card ragged. */
+  #stats .label { font-size: 11px; color: var(--text-muted); text-transform: none; white-space: nowrap; }
+  /* Tabular figures even on the hero: these count up every frame during the
+     flyover, and proportional digits make the number twitch as it climbs. */
+  #stats .value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #stats .hero .value { font-size: 48px; letter-spacing: -0.03em; line-height: 1.05; }
+  #stats u { font-size: 12px; font-weight: 400; color: var(--text-muted); text-decoration: none; margin-left: 3px; }
+  #stats .hero u { font-size: 20px; color: var(--text-secondary); }
+  #stats.hidden, #panel.hidden { display: none; }
+
+  /* ---- charts panel ---- */
+  #panel {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 10;
+    background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid var(--border); padding: 10px 16px 14px;
+  }
+  #controls { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  #readout { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  #readout b { color: var(--text-primary); font-weight: 600; }
+  .key { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 1px; }
+
+  /* Air between the plots, so a peak clears the chart above it without
+     costing the line any amplitude. */
+  .chart { position: relative; margin-top: 9px; }
+  .chart .title { font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; }
+  /* Scales with the window so three charts plus the controls always fit; the
+     SVG viewBox is fixed and non-scaling-stroke keeps lines 2px regardless. */
+  .chart svg { display: block; width: 100%; height: clamp(38px, 8vh, 74px); }
+  .grid-line { stroke: var(--grid); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .series { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+  /* The playhead and the wash over the not-yet-played remainder — together
+     they make the charts read as a seek bar rather than three static plots. */
+  #cursor { position: absolute; width: 2px; background: var(--text-primary); pointer-events: none; display: none; }
+  #unplayed { position: absolute; background: rgba(10,10,9,0.55); pointer-events: none; display: none; }
+  #charts { cursor: pointer; touch-action: none; }
+  .no-charts { margin: 14px 4px 18px; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
+
+  /* Rides the marker element, which MapLibre already positions absolutely. */
+  .runner-hud {
+    position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+    margin-bottom: 8px; pointer-events: none;
+    display: flex; align-items: center; gap: 12px; white-space: nowrap;
+    background: color-mix(in srgb, var(--surface-2) 90%, transparent);
+    backdrop-filter: blur(6px);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 5px 10px; font-size: 13px; line-height: 1;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+  }
+  /* Each metric is its own centred row. Left to inline layout the 18px
+     runner sat on the text baseline and dragged the pace number 6px below
+     the heart-rate number. */
+  .runner-hud span { display: inline-flex; align-items: center; gap: 5px; }
+  .runner-hud b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .runner-hud u { color: var(--text-muted); text-decoration: none; margin-left: 2px; }
+  .runner-hud .hidden, .runner-hud.hidden { display: none; }
+
+  /* Loading feedback once the app is up: the upload screen is hidden by then,
+     so its spinner and — worse — its error box were both invisible. */
+  #reload {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 30; display: flex; align-items: center; gap: 12px;
+    max-width: calc(100vw - 40px);
+    padding: 14px 20px; border-radius: 14px;
+    background: color-mix(in srgb, var(--surface-2) 95%, transparent);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border); box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+    font-size: 14px; color: var(--text-secondary);
+  }
+  #reload[hidden] { display: none; }
+  #reload.failed { border-color: rgba(220,38,38,0.45); background: rgba(40,16,16,0.95); color: #ff9d9d; cursor: pointer; }
+  #reload.failed .spinner { display: none; }
+
+  /* ---- mini scrubber ---- */
+  /* Two states of one control: the pill is the everyday scrubber, the panel
+     pops open over it when you want the charts. */
+  /* Slide, don't snap. visibility is delayed to the end of the transition so
+     the hidden one is still un-measurable to layout probes and screen readers. */
+  #panel, #mini {
+    transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1),
+                opacity 200ms ease, visibility 0s;
+  }
+  body.mini #panel {
+    transform: translateY(100%); opacity: 0; visibility: hidden;
+    pointer-events: none; transition-delay: 0s, 0s, 320ms;
+  }
+  body:not(.mini) #mini {
+    transform: translateX(-50%) translateY(150%); opacity: 0; visibility: hidden;
+    pointer-events: none; transition-delay: 0s, 0s, 320ms;
+  }
+  #mini.hidden, #panel.hidden { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    #panel, #mini { transition-duration: 0s; }
+  }
+
+  #mini {
+    position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
+    z-index: 10; display: flex; align-items: center; gap: 12px;
+    width: min(620px, calc(100vw - 32px));
+    padding: 8px 12px; border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border); box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+  }
+  #mini-pos { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .icon {
+    flex: none; width: 44px; height: 44px; border-radius: 50%;
+    background: var(--series-ele); color: #fff; border: 0;
+    font-size: 13px; line-height: 1; cursor: pointer;
+  }
+  .btn.small { min-height: 44px; padding: 5px 14px; font-size: 12px; flex: none; }
+
+  /* A native range input: drag, keyboard arrows and a11y come for free.
+     --p is the played fraction, written by render(). */
+  #seekbar {
+    -webkit-appearance: none; appearance: none;
+    flex: 1; min-width: 0; height: 44px; background: transparent; cursor: pointer;
+  }
+  #seekbar::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 2px;
+    background: linear-gradient(90deg, var(--series-pace) var(--p, 0%), var(--grid) var(--p, 0%));
+  }
+  #seekbar::-moz-range-track {
+    height: 4px; border-radius: 2px;
+    background: linear-gradient(90deg, var(--series-pace) var(--p, 0%), var(--grid) var(--p, 0%));
+  }
+  #seekbar::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; margin-top: -6px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--text-primary); border: 2px solid var(--surface-2);
+  }
+  #seekbar::-moz-range-thumb {
+    width: 14px; height: 14px; border: 2px solid var(--surface-2);
+    border-radius: 50%; background: var(--text-primary);
+  }
+  #seekbar:focus-visible { outline: 2px solid var(--series-ele); outline-offset: 4px; border-radius: 999px; }
+
+  /* ---- beating heart ---- */
+  .runner-hud .heart {
+    width: 15px; height: 15px; flex: none;
+    /* Hearts are red before they are a chart series. The heart shape and the
+       "bpm" unit carry identity here, so this does not have to match the
+       green of the heart-rate chart. */
+    fill: #e66767; transform-origin: 50% 60%;
+    animation: beat var(--beat, 0s) ease-in-out infinite;
+  }
+
+  /* ---- running figure ---- */
+  /* Eight hand-set poses per gait cycle, the way a stick-figure animator poses
+     every frame rather than interpolating two extremes:
+       1 contact  2 down  3 passing  4 up (toe-off)
+       5 float    6 tuck  7 reach    8 pre-contact
+     Interpolated rather than stepped, because at 18px smoothness reads better
+     than a 10fps hold. Timing is linear so the cycle does not ease at every pose. */
+  .runner-fig {
+    --gait: calc(var(--stride, 0s) * 2);
+    width: 18px; height: 18px; flex: none;
+    color: var(--series-pace);
+    fill: none; stroke: currentColor; stroke-width: 1.75;
+    stroke-linecap: round; stroke-linejoin: round;
+    transform-origin: 50% 85%;
+    animation: rf-bob var(--gait, 0s) linear infinite;
+  }
+  .runner-fig g { transform-box: view-box; }
+  .rf-leg  { transform-origin: 12.2px 13px;   animation: rf-thigh var(--gait) linear infinite; }
+  .rf-shin { transform-origin: 12.6px 17px;   animation: rf-knee  var(--gait) linear infinite; }
+  .rf-arm  { transform-origin: 14.4px 7.8px;  animation: rf-arm   var(--gait) linear infinite; }
+  .rf-fore { transform-origin: 13.4px 10.9px; animation: rf-fore  var(--gait) linear infinite; }
+
+  .rf-leg.rf-b, .rf-leg.rf-b .rf-shin, .rf-arm.rf-a { animation-delay: calc(var(--gait) * -0.5); }
+
+  /* Depth cue: the figure runs to the right, so the far-side (left) arm and leg
+     sit behind the body and read as shaded. Drawn first, hence behind. Mixed
+     only 76% toward the ground — any darker and the limb drops under the 3:1
+     contrast floor for graphics on this panel. */
+  .rf-arm.rf-b, .rf-leg.rf-b { stroke: color-mix(in srgb, var(--series-pace) 76%, #14140f); }
+  /* Drag: the hand trails the upper arm by ~8% of the cycle. */
+  .rf-arm.rf-b .rf-fore { animation-delay: calc(var(--gait) * -0.92); }
+  .rf-arm.rf-a .rf-fore { animation-delay: calc(var(--gait) * -0.42); }
+
+  /* Two footfalls per gait cycle, so the body dips twice. */
+  @keyframes rf-bob {
+    0%   { transform: translateY(0.2px); }   12.5% { transform: translateY(1.2px); }
+    25%  { transform: translateY(0.1px); }   37.5% { transform: translateY(-1.2px); }
+    50%  { transform: translateY(0.2px); }   62.5% { transform: translateY(1.2px); }
+    75%  { transform: translateY(0.1px); }   87.5% { transform: translateY(-1.2px); }
+    100% { transform: translateY(0.2px); }
+  }
+  @keyframes rf-thigh {
+    0%   { transform: rotate(-32deg); }  12.5% { transform: rotate(-14deg); }
+    25%  { transform: rotate(6deg); }    37.5% { transform: rotate(28deg); }
+    50%  { transform: rotate(20deg); }   62.5% { transform: rotate(-4deg); }
+    75%  { transform: rotate(-26deg); }  87.5% { transform: rotate(-36deg); }
+    100% { transform: rotate(-32deg); }
+  }
+  @keyframes rf-knee {
+    0%   { transform: rotate(14deg); }   12.5% { transform: rotate(40deg); }
+    25%  { transform: rotate(20deg); }   37.5% { transform: rotate(8deg); }
+    50%  { transform: rotate(48deg); }   62.5% { transform: rotate(92deg); }
+    75%  { transform: rotate(60deg); }   87.5% { transform: rotate(26deg); }
+    100% { transform: rotate(14deg); }
+  }
+  /* The back of the swing is the drive: the elbow goes well behind the torso,
+     much further than it comes forward. Front reach is limited by the chest,
+     back reach is not. */
+  @keyframes rf-arm {
+    0%   { transform: rotate(-30deg); }  12.5% { transform: rotate(-10deg); }
+    25%  { transform: rotate(20deg); }   37.5% { transform: rotate(48deg); }
+    50%  { transform: rotate(66deg); }   62.5% { transform: rotate(44deg); }
+    75%  { transform: rotate(4deg); }    87.5% { transform: rotate(-26deg); }
+    100% { transform: rotate(-30deg); }
+  }
+  @keyframes rf-fore {
+    0%   { transform: rotate(-28deg); }  12.5% { transform: rotate(-20deg); }
+    25%  { transform: rotate(2deg); }    37.5% { transform: rotate(20deg); }
+    50%  { transform: rotate(26deg); }   62.5% { transform: rotate(18deg); }
+    75%  { transform: rotate(-8deg); }   87.5% { transform: rotate(-26deg); }
+    100% { transform: rotate(-28deg); }
+  }
+  .runner-hud [data-k=pace].still .runner-fig,
+  .runner-hud [data-k=pace].still .runner-fig g { animation: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .runner-fig, .runner-fig g { animation: none; }
+  }
+  /* Two quick squeezes then rest — a flat pulse reads like a throb, not a heart. */
+  @keyframes beat {
+    0%   { transform: scale(1); }
+    12%  { transform: scale(1.32); }
+    24%  { transform: scale(1.02); }
+    36%  { transform: scale(1.2); }
+    52%  { transform: scale(1); }
+    100% { transform: scale(1); }
+  }
+  .runner-hud [data-k=hr].still .heart { animation: none; }
+  @media (prefers-reduced-motion: reduce) { .runner-hud .heart { animation: none; } }
+
+  /* ---- follow / free-look ---- */
+  /* --chrome-h is the height of whichever bottom bar is up, published by
+     syncChrome(). Anchoring to it keeps this clear of the pill and the sheet
+     at every width instead of guessing a fixed offset. */
+  #follow {
+    position: absolute; z-index: 11;
+    right: max(14px, env(safe-area-inset-right));
+    bottom: calc(var(--chrome-h, 60px) + 78px + env(safe-area-inset-bottom));
+    display: inline-flex; align-items: center; gap: 7px;
+    min-height: 44px; padding: 10px 16px; border-radius: 999px;
+    background: var(--series-ele); color: #fff; border: 0;
+    font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+    animation: rise-in 200ms ease-out;
+  }
+  #follow[hidden] { display: none; }
+  /* With the sheet up there is no pill grabber reaching upward, so the extra
+     clearance is not needed — and in short landscape it pushed this off-screen. */
+  body:not(.mini) #follow { bottom: calc(var(--chrome-h, 0px) + 14px + env(safe-area-inset-bottom)); }
+  #follow svg { width: 16px; height: 16px; }
+  @keyframes rise-in { from { opacity: 0; transform: translateY(6px); } }
+
+  /* ---- sheet grabber ---- */
+  /* 44px of hit area, ~24px of visual: the negative margin pulls the surplus
+     back so the bar does not fatten the pill. */
+  .grab {
+    display: block; width: 100%; height: 44px; padding: 0; margin-bottom: -20px;
+    background: none; border: 0; cursor: grab; touch-action: none;
+  }
+  /* On the pill it sits over the top padding instead of taking a row of its
+     own — that row was a fifth of the player's height in portrait. */
+  #mini .grab {
+    position: absolute; top: -26px; left: 0; right: 0;
+    height: 44px; margin: 0; width: auto;
+  }
+  .grab::before {
+    content: ''; display: block; width: 40px; height: 4px; margin: 9px auto 0;
+    border-radius: 2px; background: var(--text-muted); opacity: 0.55;
+    transition: opacity 150ms ease;
+  }
+  #mini .grab::before { margin-top: 30px; }
+  .grab:hover::before { opacity: 0.9; }
+  .grab:active { cursor: grabbing; }
+  #grab-panel { margin-bottom: -8px; }
+  #grab-mini { display: none; }
+
+  /* ==================================================================
+     MOBILE — portrait phones. The map is the product, so the chrome
+     shrinks to leave it as much room as possible.
+     ================================================================== */
+  @media (max-width: 640px) {
+    #stats {
+      top: max(10px, env(safe-area-inset-top)); left: 10px;
+      max-width: calc(100vw - 20px); padding: 10px 12px; gap: 12px;
+    }
+    #stats .tiles { grid-template-columns: repeat(3, auto); gap: 2px 12px; }
+    /* Below ~360px three columns cannot sit beside the hero without wrapping. */
+    @media (max-width: 360px) { #stats .tiles { grid-template-columns: repeat(2, auto); gap: 2px 10px; } }
+    #stats .hero .value { font-size: 34px; }
+    #stats .hero u { font-size: 15px; }
+    #stats .value { font-size: 14px; }
+    #stats .label { font-size: 10px; }
+
+    /* Charts become a bottom sheet: peek the map above it. */
+    #panel {
+      max-height: 62vh; overflow-y: auto;
+      border-radius: 18px 18px 0 0;
+      padding: 0 12px calc(12px + env(safe-area-inset-bottom));
+    }
+    #grab-mini { display: block; }
+    #grab-panel { position: sticky; top: 0; z-index: 1; }
+    #controls { flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+    #controls .btn { min-height: 44px; padding: 10px 8px; font-size: 12px; white-space: nowrap; }
+    #load, #collapse { flex: 1; }
+    #readout { width: 100%; margin-left: 0; justify-content: flex-end; }
+
+    #mini {
+      width: calc(100vw - 20px); bottom: max(12px, env(safe-area-inset-bottom));
+      padding: 18px 12px 10px; border-radius: 18px; gap: 10px;
+    }
+    #expand { display: none; }         /* the grabber replaces it on touch */
+    #mini-pos { font-size: 11px; }
+    #seekbar::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -7px; }
+    #seekbar::-moz-range-thumb { width: 18px; height: 18px; }
+
+    .chart svg { height: clamp(44px, 11vh, 70px); }
+    .runner-hud { font-size: 12px; padding: 4px 9px; gap: 10px; }
+  }
+
+  /* Not enough height for the card and the sheet at once: the map credit gets
+     pushed up into the card. Charts open means you are reading the charts. */
+  @media (max-height: 620px) {
+    body:not(.mini) #stats { display: none; }
+  }
+
+  /* Landscape phones: almost no height, so drop the panel to a sliver. */
+  @media (max-height: 460px) and (orientation: landscape) {
+    /* Charts open means you are reading data; the card repeats it and there
+       is not enough height for both. */
+    body:not(.mini) #stats { display: none; }
+    #stats { padding: 8px 12px; gap: 0 14px; }
+    #stats .hero .value { font-size: 26px; }
+    #panel { max-height: 78vh; }
+    .chart svg { height: 38px; }
+  }
+
+  /* OSM and CARTO both require visible attribution — the panel covers the
+     bottom-right corner MapLibre puts it in by default. */
+  .maplibregl-ctrl-bottom-right {
+    top: auto; left: 4px; right: auto;
+    bottom: calc(var(--chrome-h, 0px) + 36px + env(safe-area-inset-bottom));
+  }
+  /* Themed, not hidden — the credit stays fully readable, it just stops being
+     a white slab on a dark map. */
+  .maplibregl-ctrl-attrib {
+    max-width: calc(100vw - 16px);
+    background: rgba(20,20,15,0.82) !important;
+    backdrop-filter: blur(6px);
+    border-radius: 7px; padding: 3px 8px;
+    font-size: 11px;
+    /* MapLibre's own rule out-specifies this and would leave the non-link
+       words black on a near-black panel. */
+    color: var(--text-secondary) !important;
+  }
+  .maplibregl-ctrl-attrib a { color: #7fb2f0 !important; }
+  .maplibregl-ctrl-attrib-button { filter: invert(1) opacity(0.7); }
+  /* On phones the card owns the top strip; put credit at the bottom-left,
+     clear of both the card and the pill. */
+  @media (max-width: 640px) {
+    .maplibregl-ctrl-bottom-right {
+      top: auto; bottom: calc(96px + env(safe-area-inset-bottom)); right: 4px;
+    }
+    .maplibregl-ctrl-attrib { font-size: 10px; max-width: 78vw; }
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="stats" class="hidden"></div>
+
+<div id="panel" class="hidden">
+  <button class="grab" id="grab-panel" aria-label="Hide charts"></button>
+  <div id="controls">
+    <button class="btn" id="play">Play flyover</button>
+    <button class="btn ghost" id="load">Load another</button>
+    <button class="btn ghost" id="collapse" aria-expanded="true">Hide charts</button>
+    <div id="readout"></div>
+  </div>
+  <div id="charts"></div>
+  <div id="unplayed"></div>
+  <div id="cursor"></div>
+</div>
+
+<div id="reload" hidden>
+  <div class="spinner" role="progressbar" aria-label="Loading activity"></div>
+  <span id="reload-text" role="status" aria-live="polite"></span>
+</div>
+
+<button id="follow" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="3.2"/><path d="M12 2.5V5M12 19v2.5M21.5 12H19M5 12H2.5"/>
+  </svg>
+  Follow runner
+</button>
+
+<div id="mini" class="hidden">
+  <button class="grab" id="grab-mini" aria-label="Show charts"></button>
+  <button class="icon" id="mini-play" aria-label="Play flyover">&#9654;</button>
+  <input id="seekbar" type="range" min="0" max="1" step="0.001" value="0" aria-label="Seek through run">
+  <span id="mini-pos"></span>
+  <button class="btn ghost small" id="expand" aria-expanded="false">Charts</button>
+</div>
+
+<div id="drop">
+  <div class="u-aurora" aria-hidden="true"></div>
+
+  <main class="u-wrap">
+    <p class="u-brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 18c3-1 3-6 6-6s3 4 5 3 2-6 5-8"/><circle cx="4" cy="18" r="1.6" fill="currentColor" stroke="none"/>
+      </svg>
+      Run Flyover
+    </p>
+
+    <h1>Fly your run<br><em>in 3D</em></h1>
+    <p class="u-sub">Drop in the file from your watch and replay the route over real terrain — with pace, heart rate and climb as you go.</p>
+
+    <div id="idle">
+      <button class="btn u-cta" id="pick">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 16V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/><path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/>
+        </svg>
+        Choose activity file
+      </button>
+      <small id="hint">or drag it anywhere on this page</small>
+    </div>
+
+    <div id="busy" hidden>
+      <div class="spinner" role="progressbar" aria-label="Loading activity"></div>
+      <div id="busy-text">Reading file…</div>
+    </div>
+
+    <p id="err" role="alert" aria-live="assertive"></p>
+
+    <ul class="u-points">
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="6" y="6" width="12" height="12" rx="3.5"/><path d="M9 6V3.5h6V6M9 18v2.5h6V18M12 9.5V12l1.75 1.25"/>
+        </svg>
+        <span><b>.FIT, .GPX, .TCX</b>Garmin, Coros, Suunto, Polar, Wahoo</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3.5 19 6v6c0 4-3 7-7 8.5C8 19 5 16 5 12V6z"/><path d="m9.25 12 2 2 3.5-3.75"/>
+        </svg>
+        <span><b>Never leaves your phone</b>Read in this tab, nothing uploaded</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 18.5 9 8l4 6.5 2.25-3.5L21 18.5z"/><path d="M7.5 18.5 12 11"/>
+        </svg>
+        <span><b>Real elevation</b>Terrain, not a flat line on a map</span>
+      </li>
+    </ul>
+
+    <p class="u-help">Garmin Connect &rarr; open the activity &rarr; <b>Export Original</b></p>
+  </main>
+</div>
+
+<input type="file" id="file" accept=".fit,.gpx,.tcx" hidden>
+
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script type="module">
+const $ = s => document.querySelector(s);
+
+/* ---------------------------------------------------------------- parsing */
+
+// FIT stores lat/lon in semicircles; some parsers pre-convert, so sniff the range.
+const toDeg = v => v == null ? null : (Math.abs(v) > 180 ? v / 2 ** 31 * 180 : v);
+
+async function parseFIT(buf) {
+  const { Decoder, Stream } = await import('https://esm.sh/@garmin/fitsdk@21.171.0');
+  const { messages } = new Decoder(Stream.fromArrayBuffer(buf)).read();
+  return (messages.recordMesgs || []).map(r => ({
+    lat: toDeg(r.positionLat),
+    lon: toDeg(r.positionLong),
+    ele: r.enhancedAltitude ?? r.altitude ?? null,
+    time: r.timestamp ? +new Date(r.timestamp) : null,
+    hr: r.heartRate ?? null,
+    cad: r.cadence ?? null,
+    speed: r.enhancedSpeed ?? r.speed ?? null,
+    dist: r.distance ?? null,
+  }));
+}
+
+// One reader for both XML formats: they differ only in tag names.
+function parseXML(text) {
+  const doc = new DOMParser().parseFromString(text, 'text/xml');
+  const tag = (el, name) => el.getElementsByTagNameNS('*', name)[0];
+  const num = (el, name) => { const n = tag(el, name); return n ? parseFloat(n.textContent) : null; };
+
+  const trkpts = doc.getElementsByTagNameNS('*', 'trkpt');
+  if (trkpts.length) return [...trkpts].map(p => ({
+    lat: +p.getAttribute('lat'),
+    lon: +p.getAttribute('lon'),
+    ele: num(p, 'ele'),
+    time: Date.parse(tag(p, 'time')?.textContent ?? '') || null,
+    hr: num(p, 'hr'),           // Garmin TrackPointExtension
+    cad: num(p, 'cad'),
+    speed: null,
+    dist: null,
+  }));
+
+  return [...doc.getElementsByTagNameNS('*', 'Trackpoint')].map(p => {
+    const pos = tag(p, 'Position');
+    return {
+      lat: pos ? num(pos, 'LatitudeDegrees') : null,
+      lon: pos ? num(pos, 'LongitudeDegrees') : null,
+      ele: num(p, 'AltitudeMeters'),
+      time: Date.parse(tag(p, 'Time')?.textContent ?? '') || null,
+      hr: num(p, 'Value'),      // HeartRateBpm > Value
+      cad: num(p, 'Cadence'),
+      speed: num(p, 'Speed'),
+      dist: num(p, 'DistanceMeters'),
+    };
+  });
+}
+
+async function parseFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const pts = ext === 'fit' ? await parseFIT(await file.arrayBuffer())
+                            : parseXML(await file.text());
+  const clean = pts.filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon) && (p.lat || p.lon));
+  if (clean.length < 2) throw new Error('No GPS points found in that file.');
+  return clean;
+}
+
+/* -------------------------------------------------------------- geometry */
+
+const R = 6371008.8;
+function haversine(aLat, aLon, bLat, bLon) {
+  const r = Math.PI / 180, dLat = (bLat - aLat) * r, dLon = (bLon - aLon) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * r) * Math.cos(bLat * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function bearing(a, b) {
+  const r = Math.PI / 180, dLon = (b.lon - a.lon) * r;
+  const y = Math.sin(dLon) * Math.cos(b.lat * r);
+  const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos(dLon);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+
+// Centered moving average, gap-safe. Raw GPS altitude and per-sample pace are
+// both far too noisy to plot or sum without this.
+function smooth(vals, win) {
+  const out = new Array(vals.length).fill(null), h = win >> 1;
+  for (let i = 0; i < vals.length; i++) {
+    let sum = 0, n = 0;
+    for (let j = Math.max(0, i - h); j <= Math.min(vals.length - 1, i + h); j++) {
+      if (Number.isFinite(vals[j])) { sum += vals[j]; n++; }
+    }
+    if (n) out[i] = sum / n;
+  }
+  return out;
+}
+
+// ponytail: 1m threshold on smoothed elevation. Sampling a DEM instead of
+// trusting the barometer/GPS would be strictly better — do that if numbers
+// still disagree with the watch.
+// Returns the running total at every sample, not just the final figure — the
+// stat card counts up during playback and needs the value at the playhead.
+function elevGain(ele, threshold = 1) {
+  const out = new Array(ele.length).fill(0);
+  let gain = 0, ref = null;
+  for (let i = 0; i < ele.length; i++) {
+    const v = ele[i];
+    if (Number.isFinite(v)) {
+      if (ref === null) ref = v;
+      else if (v - ref >= threshold) { gain += v - ref; ref = v; }
+      else if (v < ref) ref = v;
+    }
+    out[i] = gain;
+  }
+  return out;
+}
+
+function derive(pts) {
+  const n = pts.length;
+
+  // The watch fuses GPS with the accelerometer, so its own distance beats
+  // anything recomputed from the coordinates. Fall back to haversine only
+  // when the file has no distance channel (most GPX).
+  // Pause on one street, resume on another, and the two fixes are joined by a
+  // straight line the runner never ran. Flag those so the transit is neither
+  // counted as distance nor drawn as route.
+  const gap = new Array(n).fill(false);
+  for (let i = 1; i < n; i++) {
+    const jump = haversine(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+    const dt = (pts[i].time - pts[i - 1].time) / 1000;
+    // A stop in the recording, or a jump no runner could cover between samples.
+    gap[i] = (Number.isFinite(dt) && dt >= 20 && jump > 50) || jump > 500;
+  }
+
+  let dist;
+  if (pts.every(p => Number.isFinite(p.dist))) {
+    const base = pts[0].dist;          // the watch already excludes paused time
+    dist = pts.map(p => p.dist - base);
+  } else {
+    dist = new Array(n).fill(0);
+    for (let i = 1; i < n; i++) {
+      dist[i] = dist[i - 1] + (gap[i] ? 0 : haversine(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon));
+    }
+  }
+
+  const ele = smooth(pts.map(p => p.ele), 15);
+  // A light window only — enough to take the GPS tremor out of the lens,
+  // not so much that the camera cuts corners off the actual route.
+  const camLat = smooth(pts.map(p => p.lat), 5);
+  const camLon = smooth(pts.map(p => p.lon), 5);
+
+  // Speed straight from the file when the device recorded it, else d/dt.
+  const speed = pts.map((p, i) => {
+    if (Number.isFinite(p.speed)) return p.speed;
+    if (!i || !pts[i - 1].time || !p.time) return null;
+    const dt = (p.time - pts[i - 1].time) / 1000;
+    return dt > 0 && dt < 30 ? (dist[i] - dist[i - 1]) / dt : null;
+  });
+  // Pace is a reciprocal, so smooth speed first — averaging min/km directly
+  // lets a single near-zero speed sample dominate the window.
+  const pace = smooth(speed, 15).map(s => (s > 0.5 ? 1000 / s / 60 : null));
+
+  const hr = pts.map(p => p.hr);
+  const gainAt = elevGain(ele);
+
+  // Every stat as a running total, so the card can read the value at the
+  // playhead in O(1) per frame instead of re-reducing the whole run.
+  const mvTime = new Array(n).fill(0);
+  const hrAvgAt = new Array(n).fill(null), hrMaxAt = new Array(n).fill(null);
+  const cadAvgAt = new Array(n).fill(null);
+  let moving = 0, hSum = 0, hCount = 0, hMax = -Infinity, cSum = 0, cCount = 0;
+  for (let i = 0; i < n; i++) {
+    if (i) {
+      // Drop samples under 0.5 m/s so standing at lights doesn't count.
+      const dt = (pts[i].time - pts[i - 1].time) / 1000;
+      if (dt > 0 && dt < 30 && speed[i] > 0.5) moving += dt;
+    }
+    mvTime[i] = moving;
+    if (Number.isFinite(hr[i])) { hSum += hr[i]; hCount++; hMax = Math.max(hMax, hr[i]); }
+    hrAvgAt[i] = hCount ? hSum / hCount : null;
+    hrMaxAt[i] = hCount ? hMax : null;
+    if (Number.isFinite(pts[i].cad)) { cSum += pts[i].cad; cCount++; }
+    cadAvgAt[i] = cCount ? cSum / cCount : null;
+  }
+
+  const paceAt = i => (mvTime[i] && dist[i] ? mvTime[i] / 60 / (dist[i] / 1000) : null);
+
+  // Where each whole kilometre begins, so the card can report the pace of the
+  // kilometre you are currently in rather than the average of everything so far.
+  const splitStart = [0];
+  for (let i = 0, k = 1; i < n; i++) if (dist[i] >= k * 1000) splitStart[k++] = i;
+  const splitAt = i => {
+    const k = Math.floor(dist[i] / 1000), s = splitStart[k] ?? 0;
+    const dd = dist[i] - dist[s], dt = mvTime[i] - mvTime[s];
+    return { km: k + 1, pace: dd > 30 && dt > 0 ? dt / 60 / (dd / 1000) : null };
+  };
+
+  // No separate totals: the whole-run figure is just the last running value,
+  // so the card can never disagree with itself at the end of playback.
+  return {
+    pts, dist, ele, pace, hr, camLat, camLon,
+    mvTime, gainAt, hrAvgAt, hrMaxAt, cadAvgAt, paceAt, splitAt, gap,
+    // A zero is a measurement; a missing channel is not. Track which is which
+    // so the card can omit a tile instead of reporting 0:00 or 0 m.
+    hasTime: pts.some(p => Number.isFinite(p.time)),
+    hasEle: ele.some(Number.isFinite),
+    last: n - 1,
+    total: dist[n - 1],
+  };
+}
+
+/* ------------------------------------------------------------ formatting */
+
+const fmtKm = m => (m / 1000).toFixed(2);
+const fmtDur = s => {
+  if (!Number.isFinite(s)) return '—';
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(Math.floor(s) % 60).padStart(2, '0')}`
+           : `${m}:${String(Math.floor(s) % 60).padStart(2, '0')}`;
+};
+const fmtPace = p => {
+  if (!Number.isFinite(p)) return '—';
+  // Round to whole seconds first, or 4.9958 prints as "4:60".
+  const t = Math.round(p * 60);
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+};
+
+/* ----------------------------------------------------------------- charts */
+
+const W = 1000, H = 74, PAD = 8;
+
+function drawChart(host, run, values, color, title, fmt, area) {
+  const ys = values.map(v => Number.isFinite(v) ? v : NaN);
+  if (!ys.some(Number.isFinite)) return null;
+
+  const finite = ys.filter(Number.isFinite);
+  const lo = Math.min(...finite), hi = Math.max(...finite), span = hi - lo || 1;
+  const x = i => run.dist[i] / run.total * W;
+  const y = v => H - PAD - (v - lo) / span * (H - 2 * PAD);
+
+  // Peak-preserving decimation. Taking every Nth sample drops the apex of any
+  // spike narrower than N — on a 3h run N is 11, so a one-second surge is
+  // missed nine times out of ten. Instead take the min AND max of each bucket,
+  // in the order they occur, which keeps every extreme at the same cost.
+  // Bucket to twice the pixel width: for a typical run that lands on 2 samples
+  // per bucket, and a 2-sample bucket emits both, so nothing is thrown away at
+  // all. Only genuinely long files get thinned, and even then every extreme
+  // survives because each bucket contributes its min and its max.
+  const step = Math.max(1, Math.ceil(ys.length / (W * 2)));
+  const pts = [];
+  for (let a = 0; a < ys.length; a += step) {
+    let loI = -1, hiI = -1;
+    for (let i = a; i < Math.min(a + step, ys.length); i++) {
+      if (!Number.isFinite(ys[i])) continue;
+      if (loI < 0 || ys[i] < ys[loI]) loI = i;
+      if (hiI < 0 || ys[i] > ys[hiI]) hiI = i;
+    }
+    if (loI < 0) { pts.push(null); continue; }          // gap in the data
+    for (const i of loI <= hiI ? [loI, hiI] : [hiI, loI]) if (!pts.length || pts[pts.length-1] !== i) pts.push(i);
+  }
+
+  let d = '', open = false;
+  for (const i of pts) {
+    if (i === null) { open = false; continue; }
+    d += `${open ? 'L' : 'M'}${x(i).toFixed(1)} ${y(ys[i]).toFixed(1)}`;
+    open = true;
+  }
+  if (!d) return null;
+
+  const fill = area
+    ? `<path d="${d}L${W} ${H - PAD}L0 ${H - PAD}Z" fill="${color}" fill-opacity="0.10"/>`
+    : '';
+
+  const el = document.createElement('div');
+  el.className = 'chart';
+  el.innerHTML = `
+    <div class="title">
+      <span><span class="key" style="background:${color}"></span>${title}</span>
+      <span>${fmt(lo)} – ${fmt(hi)}</span>
+    </div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="${title}">
+      <line class="grid-line" x1="0" y1="${H - PAD}" x2="${W}" y2="${H - PAD}"/>
+      ${fill}
+      <path class="series" d="${d}" stroke="${color}"/>
+    </svg>`;
+  host.appendChild(el);
+}
+
+/* -------------------------------------------------------------------- map */
+
+const map = new maplibregl.Map({
+  container: 'map',
+  center: [0, 20], zoom: 1.5,
+  maxPitch: 85,
+  // Left on (the default), MapLibre rewrites the camera's centre elevation from
+  // the DEM on every render and every tile that streams in — the camera visibly
+  // bobs as terrain sharpens. We pin elevation from the track instead.
+  centerClampedToGround: false,
+  // Empty until a file arrives: the drop zone covers the map opaquely, so a
+  // basemap here would spend ~56 requests drawing a world nobody sees.
+  style: { version: 8, sources: {}, layers: [] },
+});
+
+// OpenFreeMap's dark style — vector, no API key. Its tiles cap at maxzoom 14
+// and MapLibre overzooms them, so z15-17 reuse one tile instead of fetching a
+// fresh set per level, which is what made the raster basemap expensive.
+const STYLE_URL = 'https://tiles.openfreemap.org/styles/dark';
+
+const marker = new maplibregl.Marker({ color: '#d95926' });
+
+// Pace and heart rate travel with the runner. Built once and updated by
+// textContent — this runs every animation frame, so no innerHTML churn.
+const hud = document.createElement('div');
+hud.className = 'runner-hud';
+hud.innerHTML = `
+  <span data-k="pace"><svg class="runner-fig" viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="15.2" cy="4.2" r="2.3" fill="currentColor" stroke="none"/>
+    <path d="M14.4 7.8 12.2 13"/>
+    <g class="rf-arm rf-b"><path d="M14.4 7.8 13.4 10.9"/>
+      <g class="rf-fore"><path d="M13.4 10.9 16.8 11.3"/></g></g>
+    <g class="rf-leg rf-b"><path d="M12.2 13 12.6 17"/>
+      <g class="rf-shin"><path d="M12.6 17 12 20.9"/></g></g>
+    <g class="rf-arm rf-a"><path d="M14.4 7.8 13.4 10.9"/>
+      <g class="rf-fore"><path d="M13.4 10.9 16.8 11.3"/></g></g>
+    <g class="rf-leg rf-a"><path d="M12.2 13 12.6 17"/>
+      <g class="rf-shin"><path d="M12.6 17 12 20.9"/></g></g>
+  </svg><b></b><u>/km</u></span>
+  <span data-k="hr"><svg class="heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5S3.5 15 3.5 9.2A4.7 4.7 0 0 1 12 6.6a4.7 4.7 0 0 1 8.5 2.6c0 5.8-8.5 11.3-8.5 11.3z"/></svg><b></b><u>bpm</u></span>`;
+const hudPace = hud.querySelector('[data-k=pace]'), hudHr = hud.querySelector('[data-k=hr]');
+marker.getElement().appendChild(hud);
+
+const empty = () => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
+
+// Terrain, sky and the track ride on top of whichever basemap is loaded, so
+// they are re-applied after setStyle rather than declared in the style.
+function addOverlays() {
+  map.setSky({
+    'sky-color': '#0b1b33', 'horizon-color': '#26364d', 'fog-color': '#14140f',
+    'sky-horizon-blend': 0.6, 'horizon-fog-blend': 0.5,
+  });
+  map.addSource('track', { type: 'geojson', lineMetrics: true, data: empty() });
+  map.addLayer({
+    id: 'track', type: 'line', source: 'track',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-width': 4, 'line-color': '#3987e5' },
+  });
+}
+
+// Elevation tiles are ~96% of this app's network bytes and by far the heaviest
+// thing it asks of the GPU. They only buy something when there is relief to
+// show: at flyover zoom one pixel is ~3.3m of ground, so a route that stays
+// inside a 30m band renders as a flat plane whatever we spend on it.
+const FLAT_RELIEF_M = 30;
+
+function relief(ele) {
+  let lo = Infinity, hi = -Infinity;
+  for (const v of ele) if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  return hi > lo ? hi - lo : 0;
+}
+
+// Called per run, so loading a hilly file after a flat one turns terrain back on.
+function applyTerrain(m) {
+  const want = m >= FLAT_RELIEF_M;
+  if (want && !map.getSource('dem')) {
+    map.addSource('dem', {
+      type: 'raster-dem', tileSize: 256, maxzoom: 14, encoding: 'terrarium',
+      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+      attribution: 'Elevation: Mapzen / AWS Terrain Tiles',
+    });
+  }
+  map.setTerrain(want ? { source: 'dem', exaggeration: 1.4 } : null);
+
+  // MapLibre drapes line layers onto the terrain surface, so a steep camera
+  // looking along a hillside hides most of the route behind its own ridges.
+  // Measured on a 580m-relief route: pitch 68 left 544px of track on screen,
+  // pitch 55 left 1054px. Flat runs keep the steeper, more cinematic angle
+  // because nothing there can occlude anything.
+  view.pitch = want ? 55 : 68;
+  return want;
+}
+
+// Swapping the style is what actually starts network traffic, so it waits for
+// a file. Resolves once the basemap and our overlays are both in place.
+let styling = null;
+function ensureStyle() {
+  return styling ??= new Promise(res => {
+    map.setStyle(STYLE_URL);
+    map.once('style.load', () => { addOverlays(); res(); });
+  });
+}
+
+// Progress is a gradient stop, not a second geometry — repainting a paint
+// property each frame is far cheaper than re-uploading the whole line.
+function setProgress(t) {
+  if (!map.getLayer('track')) return;
+  map.setPaintProperty('track', 'line-gradient',
+    ['step', ['line-progress'], '#d95926', Math.min(0.999, Math.max(0.001, t)), 'rgba(57,135,229,0.45)']);
+}
+
+/* ------------------------------------------------------------------- app */
+
+let run = null, playing = false, raf = 0, statSlots = {}, terrainOn = false;
+let head = 0;                    // the playhead: position along the route, 0..1
+let clockFrom = 0, clockAt = 0;  // where and when the current playback leg started
+
+async function show(pts) {
+  await ensureStyle();
+
+  const derived = derive(pts);
+  // Every horizontal position is a fraction of total distance, so a track that
+  // never moved divides by zero and puts NaN into the chart paths. There is no
+  // flyover to draw either — say so rather than render a broken one.
+  if (!(derived.total > 10)) {
+    throw new Error('that activity has no movement in it — the track never leaves one spot.');
+  }
+  run = derived;
+  terrainOn = applyTerrain(relief(run.ele));
+  const coords = run.pts.map(p => [p.lon, p.lat]);
+
+  const parts = [[]];
+  coords.forEach((c, i) => { if (run.gap[i]) parts.push([]); parts[parts.length - 1].push(c); });
+  const drawn = parts.filter(p => p.length > 1);
+  map.getSource('track').setData(drawn.length > 1
+    ? { type: 'Feature', geometry: { type: 'MultiLineString', coordinates: drawn } }
+    : { type: 'Feature', geometry: { type: 'LineString', coordinates: drawn[0] || coords } });
+  setProgress(0.001);
+
+  const b = coords.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
+  map.fitBounds(b, { padding: { top: 140, bottom: 240, left: 60, right: 60 }, pitch: 55, duration: 1200 });
+  marker.setLngLat(coords[0]).addTo(map);
+
+  // Only offer what this file can actually answer.
+  const available = FIELDS.filter(([k]) =>
+    k === 'gain' ? run.hasEle :
+    k === 'hr'   ? !!run.hrAvgAt[run.last] :
+    k === 'cad'  ? !!run.cadAvgAt[run.last] : run.hasTime);
+
+  // Built once with empty slots; paintStats fills them every frame.
+  $('#stats').innerHTML = `
+    <div class="hero"><div class="label">Distance</div><div class="value"><b data-s="dist"></b><u>km</u></div></div>
+    <div class="tiles">${available.map(([k, label, unit]) => tile(label, k, unit)).join('')}</div>
+    ${available.length ? `
+      <button id="card-opts" aria-label="Choose which stats to show" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+          <circle cx="6" cy="12" r="1.4" fill="currentColor" stroke="none"/>
+          <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/>
+          <circle cx="18" cy="12" r="1.4" fill="currentColor" stroke="none"/>
+        </svg>
+      </button>
+      <div id="card-menu" hidden role="group" aria-label="Visible stats">
+        ${available.map(([k, label]) =>
+          `<label><input type="checkbox" data-f="${k}"><span>${label}</span></label>`).join('')}
+      </div>` : ''}`;
+  statSlots = Object.fromEntries([...$('#stats').querySelectorAll('[data-s]')].map(el => [el.dataset.s, el]));
+  wireCardOptions();
+
+  const host = $('#charts');
+  host.innerHTML = '';
+  drawChart(host, run, run.ele, '#3987e5', 'Elevation (m)', v => Math.round(v), true);
+  drawChart(host, run, run.pace, '#d95926', 'Pace (min/km)', fmtPace, false);
+  drawChart(host, run, run.hr, '#199e70', 'Heart rate (bpm)', v => Math.round(v), false);
+
+  if (!host.children.length) {
+    host.innerHTML = '<p class="no-charts">This file has no elevation, pace or heart-rate data to plot &mdash; ' +
+      'the map and the scrubber still work.</p>';
+  }
+
+  // A GPX without a chest strap has no heart rate at all — drop the slot
+  // rather than parking a permanent em dash over the runner.
+  const hasPace = run.pace.some(Number.isFinite), hasHr = run.hr.some(Number.isFinite);
+  hudPace.classList.toggle('hidden', !hasPace);
+  hudHr.classList.toggle('hidden', !hasHr);
+  // With neither, the pill would float above the runner as an empty box.
+  hud.classList.toggle('hidden', !hasPace && !hasHr);
+
+  $('#drop').classList.add('hide');
+  $('#stats').classList.remove('hidden');
+  $('#panel').classList.remove('hidden');
+  $('#mini').classList.remove('hidden');
+  following = true;                      // fitBounds is not a user gesture
+  $('#follow').hidden = true;
+  setPanel(false);          // open compact; "Charts" pops the full panel
+
+  // Park the playhead at the end so the card opens on the finished run's
+  // numbers; the first play rewinds it to the start.
+  stop();
+  seek(1, false);
+}
+
+const FIELDS = [
+  ['time', 'Moving time'], ['pace', 'Avg pace', '/km'], ['split', 'This km', '/km'],
+  ['gain', 'Elev gain', 'm'], ['hr', 'Avg / max HR'], ['cad', 'Avg cadence', 'spm'],
+];
+const TILE_PREFS = 'flyover.tiles';
+
+const tile = (label, slot, unit = '') =>
+  `<div data-field="${slot}"><div class="label">${label}</div><div class="value"><b data-s="${slot}"></b>${unit ? `<u>${unit}</u>` : ''}</div></div>`;
+
+const readPrefs = () => { try { return JSON.parse(localStorage.getItem(TILE_PREFS)) || {}; } catch { return {}; } };
+
+// Hiding a tile reflows the card, which changes the chrome the Follow button
+// and the map credit sit above — so re-measure rather than assume.
+function applyTilePrefs() {
+  const prefs = readPrefs();
+  for (const el of $('#stats').querySelectorAll('[data-field]')) el.hidden = prefs[el.dataset.field] === false;
+  syncChrome();
+  if (run) render(false);
+}
+
+function wireCardOptions() {
+  const btn = $('#card-opts'), menu = $('#card-menu');
+  if (!btn) return;
+  const prefs = readPrefs();
+  for (const box of menu.querySelectorAll('input')) {
+    box.checked = prefs[box.dataset.f] !== false;
+    box.addEventListener('change', () => {
+      const next = readPrefs();
+      next[box.dataset.f] = box.checked;
+      try { localStorage.setItem(TILE_PREFS, JSON.stringify(next)); } catch {}
+      applyTilePrefs();
+    });
+  }
+  const open = on => { menu.hidden = !on; btn.setAttribute('aria-expanded', String(on)); };
+  btn.onclick = e => { e.stopPropagation(); open(menu.hidden); };
+  menu.onclick = e => e.stopPropagation();
+  addEventListener('click', () => open(false));
+  addEventListener('keydown', e => { if (e.key === 'Escape') open(false); });
+  applyTilePrefs();
+}
+
+// The card reads the running totals at the playhead, so it counts up through
+// the flyover and lands on the whole-run figures at the end.
+function paintStats(i) {
+  const s = statSlots;
+  s.dist.textContent = fmtKm(run.dist[i]);
+  if (s.time) s.time.textContent = fmtDur(run.mvTime[i]);
+  if (s.pace) s.pace.textContent = fmtPace(run.paceAt(i));
+  if (s.gain) s.gain.textContent = Math.round(run.gainAt[i]);
+  if (s.hr) s.hr.textContent = `${Math.round(run.hrAvgAt[i])} / ${run.hrMaxAt[i]}`;
+  if (s.cad) s.cad.textContent = Math.round(run.cadAvgAt[i] * 2);
+  if (s.split) {
+    const sp = run.splitAt(i);
+    s.split.textContent = sp.pace ? fmtPace(sp.pace) : '—';
+  }
+}
+
+function nearestIndex(fraction) {
+  const target = fraction * run.total;
+  let lo = 0, hi = run.dist.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (run.dist[mid] < target) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+// Position anywhere along the route, not just at a recorded sample. Snapping
+// the camera to the nearest sample makes it lurch forward once per GPS fix;
+// interpolating by distance makes the travel continuous.
+function posAt(metres) {
+  const d = Math.min(Math.max(metres, 0), run.total);
+  const i = nearestIndex(d / run.total), h = Math.max(0, i - 1);
+  const span = run.dist[i] - run.dist[h];
+  const f = span > 0 ? (d - run.dist[h]) / span : 0;
+  const mix = (a, b) => a + (b - a) * f;
+  return {
+    lat: mix(run.camLat[h], run.camLat[i]),
+    lon: mix(run.camLon[h], run.camLon[i]),
+    ele: mix(run.ele[h] ?? 0, run.ele[i] ?? 0),
+  };
+}
+
+// Shortest signed turn, so heading 359° -> 1° is +2 and never a 358° spin.
+const wrap = deg => ((deg + 540) % 360) - 180;
+
+// Heading over an ~80m chord straddling the runner rather than between two
+// consecutive fixes: at 1Hz, consecutive fixes are ~3m apart and GPS noise of
+// the same size swings the instantaneous heading by tens of degrees.
+const LOOK_BACK = 20, LOOK_AHEAD = 60;
+const cam = { bearing: null, ele: null };
+
+// Free look. The camera rides the runner until you touch the map, then it lets
+// go — playback and every readout carry on without it. Zoom and pitch are
+// whatever you last left them at, so re-attaching keeps your vantage point.
+const view = { zoom: 15.5, pitch: 68 };
+let following = true;
+
+function setFollow(on) {
+  following = on;
+  $('#follow').hidden = on || !run;
+  if (on) {
+    cam.bearing = cam.ele = null;   // snap to the runner rather than swinging to it
+    if (run) render(true);
+  }
+}
+
+// Our own jumpTo fires these too, but without an originalEvent — that is the
+// only reliable way to tell a user gesture from the camera moving itself.
+map.on('movestart', e => { if (e.originalEvent && run) setFollow(false); });
+
+// Zoom and pitch you set by hand are kept and reused when following resumes.
+// Read from the gesture rather than from the map on re-attach, or the initial
+// fit-to-route zoom would be mistaken for a preference.
+map.on('zoomend', e => { if (e.originalEvent) view.zoom = map.getZoom(); });
+map.on('pitchend', e => { if (e.originalEvent) view.pitch = map.getPitch(); });
+
+function aimCamera(metres) {
+  if (!following) return;
+  const here = posAt(metres);
+  const target = bearing(posAt(metres - LOOK_BACK), posAt(metres + LOOK_AHEAD));
+
+  // Ride the *rendered* ground, not the file's altitude. A barometer and the
+  // DEM disagree by tens of metres, and terrain is drawn exaggerated on top of
+  // that, so trusting the file put the camera hundreds of metres inside the
+  // hill on any climb. Damped, so tiles streaming in cannot make it bob.
+  const ground = terrainOn ? map.queryTerrainElevation({ lng: here.lon, lat: here.lat }) : null;
+  const groundEle = Number.isFinite(ground) ? ground : here.ele;
+
+  // Critically damped enough to absorb a switchback without swinging past it.
+  cam.bearing = cam.bearing === null ? target : cam.bearing + wrap(target - cam.bearing) * 0.08;
+  // Asymmetric on purpose: easing down a slope looks natural, but easing *into*
+  // a hillside does not — so the ground is a hard floor and only descent damps.
+  const damped = cam.ele === null ? groundEle : cam.ele + (groundEle - cam.ele) * 0.08;
+  cam.ele = Math.max(damped, groundEle + 2);
+
+  map.jumpTo({
+    center: [here.lon, here.lat],
+    zoom: view.zoom, pitch: view.pitch,
+    bearing: (cam.bearing + 360) % 360,
+    elevation: cam.ele,
+  });
+}
+
+// The heart beats at the runner's actual heart rate. Quantised to 20ms because
+// writing a new animation-duration every frame makes the animation stutter.
+let beatMs = 0;
+function setBeat(bpm) {
+  const ms = Number.isFinite(bpm) && bpm > 25 ? Math.round(60000 / bpm / 20) * 20 : 0;
+  if (ms === beatMs) return;
+  beatMs = ms;
+  hud.style.setProperty('--beat', ms ? `${ms}ms` : '0s');
+  hudHr.classList.toggle('still', !ms);
+}
+
+// Keep the runner's readout on screen when the marker nears an edge — a
+// marker-anchored tooltip is otherwise clipped by the map container. Also runs
+// on map moves, since fitBounds and inertia slide the marker without a render.
+let hudAt = null;
+function placeHud(here) {
+  if (here) hudAt = here;
+  if (!hudAt) return;
+  const px = map.project([hudAt.lon, hudAt.lat]).x, half = hud.offsetWidth / 2;
+  const nudge = Math.max(0, 8 + half - px) - Math.max(0, px + half + 8 - map.getCanvas().clientWidth);
+  hud.style.transform = `translateX(calc(-50% + ${Math.round(nudge)}px))`;
+}
+map.on('move', () => placeHud());
+
+// Legs move at cadence, not pace. FIT records cadence per leg, so steps per
+// minute is twice that; --stride is one footstrike and a gait cycle is two.
+let strideMs = 0;
+function setStride(cad, pace) {
+  // ponytail: real cadence barely shifts with pace (most runners sit near
+  // 170spm at any speed), so a constant stands in for files without it.
+  const spm = Number.isFinite(cad) && cad > 20 ? cad * 2 : (Number.isFinite(pace) ? 170 : 0);
+  const ms = spm ? Math.round(60000 / spm / 20) * 20 : 0;
+  if (ms === strideMs) return;
+  strideMs = ms;
+  hud.style.setProperty('--stride', ms ? `${ms}ms` : '0s');
+  hudPace.classList.toggle('still', !ms);
+}
+
+// Everything on screen is a function of the playhead, so there is one place
+// where position turns into pixels and no two readouts can drift apart.
+function render(follow) {
+  const metres = head * run.total, i = nearestIndex(head), here = posAt(metres);
+
+  marker.setLngLat([here.lon, here.lat]);
+  setProgress(head);
+  paintStats(i);
+
+  // Keep the runner's readout on screen when the marker nears an edge —
+  // a marker-anchored tooltip is otherwise clipped by the map container.
+  placeHud(here);
+
+  hudPace.querySelector('b').textContent = Number.isFinite(run.pace[i]) ? fmtPace(run.pace[i]) : '—';
+  hudHr.querySelector('b').textContent = Number.isFinite(run.hr[i]) ? Math.round(run.hr[i]) : '—';
+  setBeat(run.hr[i]);
+  setStride(run.pts[i].cad, run.pace[i]);
+
+  // Distance counts up in the hero and pace/HR ride the runner, so elevation
+  // is the only live value left without a home.
+  $('#readout').innerHTML = `<span><span class="key" style="background:var(--series-ele)"></span>` +
+    `<b>${Number.isFinite(run.ele[i]) ? `${Math.round(run.ele[i])} m` : '—'}</b></span>`;
+
+  $('#seekbar').value = head;
+  $('#seekbar').style.setProperty('--p', `${(head * 100).toFixed(2)}%`);
+  $('#mini-pos').textContent = `${fmtKm(run.dist[i])} / ${fmtKm(run.total)} km`;
+
+  const box = $('#charts').getBoundingClientRect(), panel = $('#panel').getBoundingClientRect();
+  const x = box.left - panel.left, y = box.top - panel.top;
+  for (const [el, style] of [[$('#cursor'), { left: `${x + head * box.width}px` }],
+                             [$('#unplayed'), { left: `${x + head * box.width}px`, right: `${panel.right - box.right}px` }]]) {
+    Object.assign(el.style, { display: 'block', top: `${y}px`, height: `${box.height}px` }, style);
+  }
+
+  if (follow) aimCamera(metres);
+}
+
+// Seeking mid-flight rebases the clock so playback continues from the new
+// spot rather than snapping back to where it would have been.
+function seek(t, follow = true) {
+  head = Math.min(1, Math.max(0, t));
+  clockFrom = head;
+  clockAt = performance.now();
+  render(follow);
+}
+
+/* ------------------------------------------------------------ interaction */
+
+// The charts double as the scrubber: click or drag anywhere to seek, exactly
+// like the timeline of a video player.
+const charts = $('#charts');
+let dragging = false;
+const seekToPointer = e => {
+  const box = charts.getBoundingClientRect();
+  seek((e.clientX - box.left) / box.width);
+};
+charts.addEventListener('pointerdown', e => {
+  if (!run) return;
+  dragging = true;
+  charts.setPointerCapture(e.pointerId);
+  seekToPointer(e);
+});
+charts.addEventListener('pointermove', e => { if (dragging) seekToPointer(e); });
+charts.addEventListener('pointerup', e => {
+  dragging = false;
+  charts.releasePointerCapture(e.pointerId);
+});
+
+// The pill's slider is the same scrubber in miniature.
+$('#seekbar').addEventListener('input', e => { if (run) seek(+e.target.value); });
+
+// Charts panel and pill are two views of one control; only one is up at a time.
+const setPanel = open => {
+  document.body.classList.toggle('mini', !open);
+  $('#collapse').setAttribute('aria-expanded', String(open));
+  $('#expand').setAttribute('aria-expanded', String(open));
+  syncChrome();
+  if (run) render(false);   // the hidden one measured 0-width, so re-place the playhead
+};
+$('#collapse').onclick = () => setPanel(false);
+$('#expand').onclick = () => setPanel(true);
+$('#follow').onclick = () => setFollow(true);
+
+// Drag the grabber to open or close the sheet. It sits above the slider on
+// purpose — a swipe starting on the slider has to mean "seek", not "open".
+for (const [id, openOnTap] of [['#grab-mini', true], ['#grab-panel', false]]) {
+  const el = $(id);
+  let y0 = null, dragged = false;
+  el.addEventListener('pointerdown', e => { y0 = e.clientY; dragged = false; el.setPointerCapture(e.pointerId); });
+  el.addEventListener('pointerup', e => {
+    if (y0 === null) return;
+    const dy = e.clientY - y0;
+    y0 = null;
+    if (Math.abs(dy) >= 24) { dragged = true; setPanel(dy < 0); }   // deliberate swipe
+  });
+  el.addEventListener('pointercancel', () => { y0 = null; });
+  // Tap and keyboard both arrive as click; the flag stops a swipe from
+  // toggling twice. Without this the grabber is unreachable by keyboard.
+  el.addEventListener('click', () => { if (!dragged) setPanel(openOnTap); dragged = false; });
+}
+
+// Publish the height of whichever bottom bar is up, so the Follow button and
+// the map credit can sit clear of it instead of guessing at a fixed offset.
+function syncChrome() {
+  const bar = document.body.classList.contains('mini') ? $('#mini') : $('#panel');
+  const h = bar && !bar.classList.contains('hidden') ? bar.getBoundingClientRect().height : 0;
+  document.documentElement.style.setProperty('--chrome-h', `${Math.round(h)}px`);
+}
+new ResizeObserver(syncChrome).observe($('#mini'));
+new ResizeObserver(syncChrome).observe($('#panel'));
+addEventListener('resize', syncChrome);
+
+const DURATION = 30000; // whole run in 30s regardless of length
+
+// Both surfaces show the same transport state.
+function setPlayLabel() {
+  $('#play').textContent = playing ? 'Pause' : 'Play flyover';
+  $('#mini-play').innerHTML = playing ? '&#10074;&#10074;' : '&#9654;';
+  $('#mini-play').setAttribute('aria-label', playing ? 'Pause' : 'Play flyover');
+}
+
+function stop() {
+  cancelAnimationFrame(raf);
+  playing = false;
+  setPlayLabel();
+}
+
+function togglePlay() {
+  if (!run) return;
+  if (playing) return stop();
+
+  playing = true;
+  setPlayLabel();
+  // Play means "fly me", so it re-attaches a camera you had detached. One
+  // touch of the map lets go again.
+  following = true;
+  $('#follow').hidden = true;
+  cam.bearing = cam.ele = null;          // snap to heading on the first frame, then damp
+  seek(head >= 1 ? 0 : head);            // replay from the top once it has finished
+
+  const tick = now => {
+    head = Math.min(1, clockFrom + (now - clockAt) / DURATION);
+    render(true);
+    if (head >= 1) return stop();
+    raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+}
+
+$('#play').onclick = togglePlay;
+$('#mini-play').onclick = togglePlay;
+
+// Space is the reflex for play/pause; ignore it while a button has focus so it
+// does not fire twice, and while typing anywhere.
+addEventListener('keydown', e => {
+  if (e.code !== 'Space' || !run) return;
+  if (e.target.matches('button, input')) return;
+  e.preventDefault();
+  togglePlay();
+});
+
+// Two places to report from: the upload screen on a cold start, and an
+// overlay once the map is up and that screen is gone.
+const busy = (msg, failed) => {
+  const onDrop = !$('#drop').classList.contains('hide');
+  $('#busy').hidden = !msg || !onDrop;
+  $('#idle').hidden = !!msg && onDrop;
+  $('#reload').hidden = !msg || onDrop;
+  $('#reload').classList.toggle('failed', !!failed);
+  if (msg) { $('#busy-text').textContent = msg; $('#reload-text').textContent = msg; }
+};
+$('#reload').onclick = () => { $('#reload').hidden = true; };
+
+// Yields to the browser so the status text actually paints before the next
+// stage blocks the main thread.
+const breathe = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+async function load(file) {
+  $('#err').textContent = '';
+  busy(`Reading ${file.name}…`);
+  try {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext === 'fit') { busy('Decoding FIT…'); await breathe(); }
+    const pts = await parseFile(file);
+
+    busy(`Plotting ${pts.length.toLocaleString()} points…`);
+    await breathe();
+    await show(pts);
+    busy(null);
+  } catch (e) {
+    const message = `Could not read ${file.name}: ${e.message}`;
+    $('#err').textContent = message;
+    // On a reload the upload screen is hidden, so the error needs the overlay
+    // or it vanishes and the previous run silently stays on screen.
+    if ($('#drop').classList.contains('hide')) busy(`${message} — tap to dismiss`, true);
+    else busy(null);
+    console.error(e);
+  }
+}
+
+$('#pick').onclick = $('#load').onclick = () => $('#file').click();
+$('#file').onchange = e => e.target.files[0] && load(e.target.files[0]);
+
+document.addEventListener('dragover', e => { e.preventDefault(); $('#drop').classList.add('over'); });
+document.addEventListener('dragleave', () => $('#drop').classList.remove('over'));
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  $('#drop').classList.remove('over');
+  if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]);
+});
+
+// Debug seam: everything else lives in module scope, so this is the only way
+// to inspect the camera or the parsed run from devtools or a test harness.
+window.flyover = {
+  map, aimCamera, posAt, cam, view,
+  get run() { return run; },
+  get following() { return following; },
+  get terrainOn() { return terrainOn; },
+  relief,
+  get head() { return head; },
+};
+
+// Installable, and able to cold-start without a network. Registered late so
+// it never competes with the first paint.
+if ('serviceWorker' in navigator) {
+  addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
+
+/* ------------------------------------------------------------ self-check */
+console.assert(Math.abs(haversine(0, 0, 0, 1) - 111195) < 50, 'haversine: 1° at equator ≈ 111.2km');
+console.assert(Math.abs(bearing({ lat: 0, lon: 0 }, { lat: 1, lon: 0 }) - 0) < 0.1, 'bearing: due north');
+console.assert(elevGain([100, 105, 104, 109]).at(-1) === 10, 'elevGain: re-climbed metres count once each');
+console.assert(elevGain([100, 100.4, 100.8]).at(-1) === 0, 'elevGain: sub-threshold noise ignored');
+console.assert(elevGain([100, 105, 104, 109]).length === 4, 'elevGain: a running total per sample');
+console.assert(elevGain([100, 105, 104, 109])[1] === 5, 'elevGain: partial total at the playhead');
+console.assert(smooth([1, 2, 3], 3)[1] === 2, 'smooth: centered mean');
+console.assert(fmtPace(5.5) === '5:30', 'fmtPace');
+</script>
+</body>
+</html>
