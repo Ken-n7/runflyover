@@ -65,8 +65,16 @@ self.addEventListener('fetch', e => {
   // Navigations: serve the app shell so a cold offline launch still boots.
   if (request.mode === 'navigate') {
     e.respondWith((async () => {
-      try { return await fetch(request); }
-      catch { return (await caches.match('./index.html')) || Response.error(); }
+      try {
+        const res = await fetch(request);
+        // Keep the offline copy current. Without this the fallback stays
+        // frozen at whatever was precached on the very first visit, so an
+        // offline launch could serve a build from months ago.
+        if (res.ok) (await caches.open(SHELL)).put('./index.html', res.clone());
+        return res;
+      } catch {
+        return (await caches.match('./index.html')) || Response.error();
+      }
     })());
     return;
   }
