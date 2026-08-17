@@ -258,6 +258,7 @@
   /* ---- charts panel ---- */
   #panel {
     position: absolute; left: 0; right: 0; bottom: 0; z-index: 10;
+    max-height: 74vh; overflow-y: auto;
     background: color-mix(in srgb, var(--surface-2) 92%, transparent);
     backdrop-filter: blur(10px);
     border-top: 1px solid var(--border); padding: 10px 16px 14px;
@@ -281,6 +282,29 @@
   #cursor { position: absolute; width: 2px; background: var(--text-primary); pointer-events: none; display: none; }
   #unplayed { position: absolute; background: rgba(10,10,9,0.55); pointer-events: none; display: none; }
   #charts { cursor: pointer; touch-action: none; }
+  /* ---- splits table ---- */
+  #splits { margin-top: 14px; }
+  #splits table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #splits caption { text-align: left; padding: 0 2px 8px; font-size: 11px; color: var(--text-muted); }
+  #splits th {
+    text-align: left; font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--text-muted);
+    padding: 0 8px 6px 0; border-bottom: 1px solid var(--grid);
+  }
+  #splits td { padding: 7px 8px 7px 0; color: var(--text-secondary); border-bottom: 1px solid rgba(255,255,255,0.04); }
+  #splits td u { text-decoration: none; color: var(--text-muted); margin-left: 2px; font-size: 10px; }
+  #splits tr[data-i] { cursor: pointer; }
+  #splits tr[data-i]:focus-visible { outline: 2px solid var(--series-ele); outline-offset: -2px; }
+  @media (hover: hover) { #splits tr[data-i]:hover td { color: var(--text-primary); background: rgba(255,255,255,0.04); } }
+  /* Pace as a bar and a number: length is time taken, so longer reads slower. */
+  #splits td.p { position: relative; min-width: 120px; }
+  #splits .bar {
+    position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+    height: 15px; border-radius: 3px; background: rgba(217,89,38,0.30);
+  }
+  #splits td.p b, #splits td.p em { position: relative; color: var(--text-primary); font-weight: 600; }
+  #splits td.p em { font-style: normal; margin-left: 5px; color: var(--text-muted); font-size: 10px; }
+
   .no-charts { margin: 14px 4px 18px; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
 
   /* Rides the marker element, which MapLibre already positions absolutely. */
@@ -632,6 +656,7 @@
     <div id="readout"></div>
   </div>
   <div id="charts"></div>
+  <div id="splits"></div>
   <div id="unplayed"></div>
   <div id="cursor"></div>
 </div>
@@ -726,7 +751,12 @@ const toDeg = v => v == null ? null : (Math.abs(v) > 180 ? v / 2 ** 31 * 180 : v
 async function parseFIT(buf) {
   const { Decoder, Stream } = await import('https://esm.sh/@garmin/fitsdk@21.171.0');
   const { messages } = new Decoder(Stream.fromArrayBuffer(buf)).read();
-  return (messages.recordMesgs || []).map(r => ({
+  // The watch's own laps: auto-lap per km, plus whatever the runner pressed.
+  let run = 0;
+  const laps = (messages.lapMesgs || [])
+    .filter(l => Number.isFinite(l.totalDistance) && l.totalDistance > 0)
+    .map(l => ({ at: (run += l.totalDistance), trigger: l.lapTrigger }));
+  const pts = (messages.recordMesgs || []).map(r => ({
     lat: toDeg(r.positionLat),
     lon: toDeg(r.positionLong),
     ele: r.enhancedAltitude ?? r.altitude ?? null,
@@ -736,6 +766,7 @@ async function parseFIT(buf) {
     speed: r.enhancedSpeed ?? r.speed ?? null,
     dist: r.distance ?? null,
   }));
+  return { pts, laps };
 }
 
 // One reader for both XML formats: they differ only in tag names.
@@ -744,8 +775,15 @@ function parseXML(text) {
   const tag = (el, name) => el.getElementsByTagNameNS('*', name)[0];
   const num = (el, name) => { const n = tag(el, name); return n ? parseFloat(n.textContent) : null; };
 
+  // TCX records laps; GPX does not, so those fall back to even kilometres.
+  let run = 0;
+  const laps = [...doc.getElementsByTagNameNS('*', 'Lap')]
+    .map(l => num(l, 'DistanceMeters'))
+    .filter(d => Number.isFinite(d) && d > 0)
+    .map(d => ({ at: (run += d), trigger: 'lap' }));
+
   const trkpts = doc.getElementsByTagNameNS('*', 'trkpt');
-  if (trkpts.length) return [...trkpts].map(p => ({
+  if (trkpts.length) return { laps: [], pts: [...trkpts].map(p => ({
     lat: +p.getAttribute('lat'),
     lon: +p.getAttribute('lon'),
     ele: num(p, 'ele'),
@@ -754,9 +792,9 @@ function parseXML(text) {
     cad: num(p, 'cad'),
     speed: null,
     dist: null,
-  }));
+  })) };
 
-  return [...doc.getElementsByTagNameNS('*', 'Trackpoint')].map(p => {
+  return { laps, pts: [...doc.getElementsByTagNameNS('*', 'Trackpoint')].map(p => {
     const pos = tag(p, 'Position');
     return {
       lat: pos ? num(pos, 'LatitudeDegrees') : null,
@@ -768,16 +806,16 @@ function parseXML(text) {
       speed: num(p, 'Speed'),
       dist: num(p, 'DistanceMeters'),
     };
-  });
+  }) };
 }
 
 async function parseFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
-  const pts = ext === 'fit' ? await parseFIT(await file.arrayBuffer())
-                            : parseXML(await file.text());
+  const { pts, laps } = ext === 'fit' ? await parseFIT(await file.arrayBuffer())
+                                      : parseXML(await file.text());
   const clean = pts.filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon) && (p.lat || p.lon));
   if (clean.length < 2) throw new Error('No GPS points found in that file.');
-  return clean;
+  return { pts: clean, laps };
 }
 
 /* -------------------------------------------------------------- geometry */
@@ -830,7 +868,7 @@ function elevGain(ele, threshold = 1) {
   return out;
 }
 
-function derive(pts) {
+function derive(pts, lapBounds) {
   const n = pts.length;
 
   // The watch fuses GPS with the accelerometer, so its own distance beats
@@ -902,6 +940,36 @@ function derive(pts) {
 
   // Where each whole kilometre begins, so the card can report the pace of the
   // kilometre you are currently in rather than the average of everything so far.
+  // One code path computes every split's numbers; the file only supplies the
+  // boundaries. So a watch's manual laps and plain kilometres read identically.
+  const idxAt = m => {
+    let lo = 0, hi = n - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (dist[mid] < m) lo = mid + 1; else hi = mid; }
+    return lo;
+  };
+  const bounds = lapBounds && lapBounds.length
+    ? lapBounds.map(l => Math.min(l.at, dist[n - 1]))
+    : Array.from({ length: Math.ceil(dist[n - 1] / 1000) }, (_, k) => Math.min((k + 1) * 1000, dist[n - 1]));
+
+  const splits = [];
+  let from = 0;
+  bounds.forEach((end, k) => {
+    const to = idxAt(end);
+    if (to <= from && k) return;                       // zero-length lap
+    let hrSum = 0, hrN = 0;
+    for (let i = from; i <= to; i++) if (Number.isFinite(hr[i])) { hrSum += hr[i]; hrN++; }
+    const d = dist[to] - dist[from], t = mvTime[to] - mvTime[from];
+    splits.push({
+      n: splits.length + 1, from, to,
+      dist: d, time: t,
+      pace: d > 30 && t > 0 ? t / 60 / (d / 1000) : null,
+      hr: hrN ? hrSum / hrN : null,
+      gain: gainAt[to] - gainAt[from],
+      partial: d < 950 && k === bounds.length - 1,
+    });
+    from = to;
+  });
+
   const splitStart = [0];
   for (let i = 0, k = 1; i < n; i++) if (dist[i] >= k * 1000) splitStart[k++] = i;
   const splitAt = i => {
@@ -914,7 +982,7 @@ function derive(pts) {
   // so the card can never disagree with itself at the end of playback.
   return {
     pts, dist, ele, pace, hr, camLat, camLon,
-    mvTime, gainAt, hrAvgAt, hrMaxAt, cadAvgAt, paceAt, splitAt, gap,
+    mvTime, gainAt, hrAvgAt, hrMaxAt, cadAvgAt, paceAt, splitAt, gap, splits,
     // A zero is a measurement; a missing channel is not. Track which is which
     // so the card can omit a tile instead of reporting 0:00 or 0 m.
     hasTime: pts.some(p => Number.isFinite(p.time)),
@@ -1118,10 +1186,10 @@ let run = null, playing = false, raf = 0, statSlots = {}, terrainOn = false;
 let head = 0;                    // the playhead: position along the route, 0..1
 let clockFrom = 0, clockAt = 0;  // where and when the current playback leg started
 
-async function show(pts) {
+async function show({ pts, laps }) {
   await ensureStyle();
 
-  const derived = derive(pts);
+  const derived = derive(pts, laps);
   // Every horizontal position is a fraction of total distance, so a track that
   // never moved divides by zero and puts NaN into the chart paths. There is no
   // flyover to draw either — say so rather than render a broken one.
@@ -1175,6 +1243,8 @@ async function show(pts) {
   drawChart(host, run, run.pace, '#d95926', 'Pace (min/km)', fmtPace, false);
   drawChart(host, run, run.hr, '#199e70', 'Heart rate (bpm)', v => Math.round(v), false);
 
+  drawSplits();
+
   if (!host.children.length) {
     host.innerHTML = '<p class="no-charts">This file has no elevation, pace or heart-rate data to plot &mdash; ' +
       'the map and the scrubber still work.</p>';
@@ -1207,6 +1277,50 @@ const FIELDS = [
   ['gain', 'Elev gain', 'm'], ['hr', 'Avg / max HR'], ['cad', 'Avg cadence', 'spm'],
 ];
 const TILE_PREFS = 'flyover.tiles';
+
+// The splits table is also the charts' text alternative: the same elevation,
+// pace and heart-rate data reachable without seeing colour or shape.
+function drawSplits() {
+  const host = $('#splits');
+  const sp = run.splits;
+  if (!sp || sp.length < 2) { host.innerHTML = ''; return; }
+
+  const paces = sp.filter(s => s.pace && !s.partial).map(s => s.pace);
+  const best = Math.min(...paces), worst = Math.max(...paces);
+  const span = worst - best || 1;
+  const auto = run.pts.some(p => Number.isFinite(p.dist));
+
+  host.innerHTML = `
+    <table>
+      <caption>Splits &mdash; the numbers behind the charts above${auto ? ', from the watch\u2019s own laps' : ''}</caption>
+      <thead><tr>
+        <th scope="col">Split</th><th scope="col">Dist</th><th scope="col">Time</th>
+        <th scope="col">Pace</th><th scope="col">HR</th><th scope="col">Climb</th>
+      </tr></thead>
+      <tbody>
+        ${sp.map(s => {
+          // Bar length is time taken, so a longer bar reads as a slower split.
+          const w = s.pace ? 12 + (s.pace - best) / span * 88 : 0;
+          const mark = s.partial ? '' : s.pace === best ? ' <em title="fastest">&#9650;</em>'
+                     : s.pace === worst ? ' <em title="slowest">&#9660;</em>' : '';
+          return `<tr tabindex="0" data-i="${s.from}" aria-label="Split ${s.n}, fly here">
+            <td>${s.n}${s.partial ? '<u>part</u>' : ''}</td>
+            <td>${fmtKm(s.dist)}</td>
+            <td>${s.time ? fmtDur(s.time) : '—'}</td>
+            <td class="p"><span class="bar" style="width:${w.toFixed(0)}%"></span><b>${s.pace ? fmtPace(s.pace) : '—'}</b>${mark}</td>
+            <td>${s.hr ? Math.round(s.hr) : '—'}</td>
+            <td>${Math.round(s.gain)}<u>m</u></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+
+  for (const tr of host.querySelectorAll('tr[data-i]')) {
+    const go = () => seek(run.dist[+tr.dataset.i] / run.total);
+    tr.onclick = go;
+    tr.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+  }
+}
 
 const tile = (label, slot, unit = '') =>
   `<div data-field="${slot}"><div class="label">${label}</div><div class="value"><b data-s="${slot}"></b>${unit ? `<u>${unit}</u>` : ''}</div></div>`;
@@ -1567,11 +1681,11 @@ async function load(file) {
   try {
     const ext = file.name.split('.').pop().toLowerCase();
     if (ext === 'fit') { busy('Decoding FIT…'); await breathe(); }
-    const pts = await parseFile(file);
+    const parsed = await parseFile(file);
 
-    busy(`Plotting ${pts.length.toLocaleString()} points…`);
+    busy(`Plotting ${parsed.pts.length.toLocaleString()} points…`);
     await breathe();
-    await show(pts);
+    await show(parsed);
     busy(null);
   } catch (e) {
     const message = `Could not read ${file.name}: ${e.message}`;
